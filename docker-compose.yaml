@@ -1,0 +1,11 @@
+version: "3.2"
+services:
+  wibot:
+    env_file:
+      - .env
+    build:
+      context: ./
+      dockerfile: .Dockerfile
+    volumes:
+      - .:/home/app
+    command: "node app.js"
