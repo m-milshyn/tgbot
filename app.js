@@ -1,6 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { translate } = require('google-translate-api-browser');
-const { v4: uuidv4 } = require('uuid'); // Для генерации уникальных идентификаторов
+const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = './data.json';
 
@@ -99,18 +99,15 @@ async function startExpertHelp(msg) {
     const chatId = msg.chat.id;
     const userLanguage = (userInfo[chatId] && userInfo[chatId].language) ? userInfo[chatId].language : defaultLanguage;
 
-    // Генерируем уникальный идентификатор для текущего процесса
     const processId = uuidv4();
     userStates[chatId] = { step: 'awaitingEmail', processId };
     userInfo[chatId].state = 'awaiting_email';
     userInfo[chatId].lastMessageId = msg.message_id;
     saveData('userStates', userStates);
-    // Удаляем старый обработчик сообщений, если он существует
     if (userStates[chatId] && userStates[chatId].handler) {
         bot.removeListener('message', userStates[chatId].handler);
     }
 
-    // Создаем и регистрируем новый обработчик сообщений
     const handleMessage = async (msg) => {
         if (msg.chat.id === chatId) {
             if (userStates[chatId] && userStates[chatId].processId === processId) {
@@ -129,12 +126,10 @@ async function startExpertHelp(msg) {
         }
     };
 
-    // Сохраняем обработчик сообщений в состоянии пользователя
     userStates[chatId].handler = handleMessage;
     saveData('userStates', userStates);
     bot.on('message', handleMessage);
 
-    // Уведомление пользователя о начале процесса
     await bot.sendMessage(chatId, await translateText('Пожалуйста, укажите ваш адрес электронной почты:', userLanguage));
 };
 
@@ -193,7 +188,6 @@ async function handleFIO(msg) {
     await bot.sendMessage(process.env.MANAGER_GROUP,
         `💡 Тема: ${expertHelpInfo[chatId].description}\n📧 Адрес электронной почты: ${expertHelpInfo[chatId].email}\n📱 Номер телефона: ${expertHelpInfo[chatId].phone}\n👨🏻‍💻 ФИО: ${expertHelpInfo[chatId].fio}`);
 
-    // Очищаем информацию после завершения
     delete userStates[chatId];
     delete expertHelpInfo[chatId];
     saveData('expertHelpInfo', expertHelpInfo);
@@ -249,7 +243,6 @@ async function questionnaireForm(msg) {
         userInfo[chatId].lastMessageId = msg.message_id;
         saveData('userInfo', userInfo);
 
-        // Завантаження даних користувача
         userInfo = loadData('userInfo');
         expertHelpInfo = loadData('expertHelpInfo');
         userStates = loadData('userStates');
@@ -350,11 +343,11 @@ async function questionnaireForm(msg) {
             },
             {
                 text: await translateText("Пожалуйста, введите ваше полное ФИО:", userLanguage),
-                options: [] // No options for this question
+                options: []
             },
             {
                 text: await translateText("Пожалуйста, введите ваш контактный телефон:", userLanguage),
-                options: [] // No options for this question
+                options: []
             }
         ];
 
@@ -386,7 +379,6 @@ async function questionnaireForm(msg) {
             const currentQuestion = questions[state.currentQuestionIndex];
 
             if (state.waitingForDetail) {
-                // Зберігаємо додаткову інформацію
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] += `: ${text}`;
                 state.currentQuestionIndex++;
                 state.waitingForDetail = false;
@@ -399,7 +391,6 @@ async function questionnaireForm(msg) {
                     await handleEndOfQuestionnaire();
                 }
             } else if (currentQuestion.customOptionIndex !== undefined && text === currentQuestion.options[currentQuestion.customOptionIndex]) {
-                // Користувач вибрав "Інше (будь ласка, уточніть)"
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] = text;
                 state.waitingForDetail = true;
                 saveData('questionnaireAnswer', questionnaireAnswer);
@@ -410,7 +401,6 @@ async function questionnaireForm(msg) {
                     { reply_markup: { remove_keyboard: true } }
                 );
             } else {
-                // Зберігаємо відповідь користувача
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] = text;
                 state.currentQuestionIndex++;
                 saveData('questionnaireAnswer', questionnaireAnswer);
@@ -460,9 +450,9 @@ async function questionnaireForm(msg) {
             bot.removeListener('message', handleAnswer);
         };
 
-        bot.removeListener('message', handleAnswer); // Видаляємо попередні обробники для цього чату
+        bot.removeListener('message', handleAnswer);
         bot.on('message', (msg) => {
-            if (msg.chat.id === chatId) handleAnswer(msg); // Обробляємо повідомлення тільки для цього користувача
+            if (msg.chat.id === chatId) handleAnswer(msg);
         });
 
         await sendQuestion();
@@ -714,7 +704,7 @@ async function translateText(clientText, targetLanguage) {
 
 async function restoreUserState(bot, userInfo, chatId) {
     if (!userInfo[chatId] || !userInfo[chatId].state) {
-        return; // Если состояние не задано, ничего не делаем
+        return;
     }
 
     const userState = userInfo[chatId].state;
@@ -769,7 +759,7 @@ async function restoreUserState(bot, userInfo, chatId) {
                 console.log(userLanguage);
                 userInfo[chatId] = {
                     language: userLanguage,
-                    state: 'start'  // Устанавливаем начальное состояние
+                    state: 'start'
                 };
 
                 saveData('userInfo', userInfo);
