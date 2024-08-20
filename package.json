@@ -8,6 +8,7 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^0.28.0",
+    "fs": "^0.0.1-security",
     "google-translate-api-browser": "^5.0.0",
     "node-telegram-bot-api": "^0.64.0",
     "uuid": "^10.0.0"

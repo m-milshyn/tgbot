@@ -1,25 +1,60 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { translate } = require('google-translate-api-browser');
 const { v4: uuidv4 } = require('uuid'); // Для генерации уникальных идентификаторов
+const fs = require('fs');
+const path = './data.json';
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-let userInfo = {};
-let expertHelpInfo = {};
-const userStates = {}; // Track user state
-const questionnaireAnswer = {}; // Track user answers
+function saveData(key, data) {
+    let jsonData = {};
+    if (fs.existsSync(path)) {
+        jsonData = JSON.parse(fs.readFileSync(path));
+    }
+    jsonData[key] = data;
+    fs.writeFileSync(path, JSON.stringify(jsonData, null, 2));
+}
+
+function loadData(key) {
+    if (fs.existsSync(path)) {
+        const jsonData = JSON.parse(fs.readFileSync(path));
+        return jsonData[key] || {};
+    }
+    return {};
+}
+
+let userInfo = loadData('userInfo');
+let expertHelpInfo = loadData('expertHelpInfo');
+let userStates = loadData('userStates');
+let questionnaireAnswer = loadData('questionnaireAnswer');
 let defaultLanguage = "ru";
 
+for (let chatId in userInfo) {
+    restoreUserState(bot, userInfo, chatId);
+}
+
 bot.onText(/\/start/, async (msg) => {
+    userInfo = loadData('userInfo');
+    expertHelpInfo = loadData('expertHelpInfo');
+    userStates = loadData('userStates');
+    questionnaireAnswer = loadData('questionnaireAnswer');
     console.log(userInfo);
-    let userLanguage = getUserLanguage(msg);
+    userLanguage = getUserLanguage(msg);
     console.log(userLanguage);
-    userInfo[msg.chat.id] = { language: userLanguage };
+    userInfo[msg.chat.id] = {
+        language: userLanguage,
+        state: 'start',
+        lastMessageId: msg.message_id
+    };
+
+    saveData('userInfo', userInfo);
     if (userInfo[msg.chat.id] && userInfo[msg.chat.id].language) {
         userLanguage = defaultLanguage;
     } else {
         userLanguage = userInfo[msg.chat.id].language;
     }
+
+    saveData('userInfo', userInfo);
 
     const opts = {
         reply_markup: {
@@ -60,14 +95,16 @@ bot.onText(/\/start/, async (msg) => {
     ), opts);
 });
 
-const startExpertHelp = async (msg) => {
+async function startExpertHelp(msg) {
     const chatId = msg.chat.id;
     const userLanguage = (userInfo[chatId] && userInfo[chatId].language) ? userInfo[chatId].language : defaultLanguage;
 
     // Генерируем уникальный идентификатор для текущего процесса
     const processId = uuidv4();
     userStates[chatId] = { step: 'awaitingEmail', processId };
-
+    userInfo[chatId].state = 'awaiting_email';
+    userInfo[chatId].lastMessageId = msg.message_id;
+    saveData('userStates', userStates);
     // Удаляем старый обработчик сообщений, если он существует
     if (userStates[chatId] && userStates[chatId].handler) {
         bot.removeListener('message', userStates[chatId].handler);
@@ -94,13 +131,14 @@ const startExpertHelp = async (msg) => {
 
     // Сохраняем обработчик сообщений в состоянии пользователя
     userStates[chatId].handler = handleMessage;
+    saveData('userStates', userStates);
     bot.on('message', handleMessage);
 
     // Уведомление пользователя о начале процесса
     await bot.sendMessage(chatId, await translateText('Пожалуйста, укажите ваш адрес электронной почты:', userLanguage));
 };
 
-const handleEmail = async (msg) => {
+async function handleEmail(msg) {
     const chatId = msg.chat.id;
     const userLanguage = (userInfo[chatId] && userInfo[chatId].language) ? userInfo[chatId].language : defaultLanguage;
     const emailRegex = /^[a-zA-Z0-9._-]{1,}@[a-z]+\.[a-z]+$/;
@@ -110,11 +148,14 @@ const handleEmail = async (msg) => {
     } else {
         expertHelpInfo[chatId] = { description: "Экспертная помощь с недвижимостью", email: msg.text, phone: "", fio: "" };
         userStates[chatId].step = 'awaitingPhone';
+        userInfo[chatId].state = 'awaiting_phone';
+        saveData('expertHelpInfo', expertHelpInfo);
+        saveData('userStates', userStates);
         await bot.sendMessage(chatId, await translateText('Отлично! Теперь, пожалуйста, укажите ваш номер телефона, начиная с символа "+" и кода страны.', userLanguage));
     }
 };
 
-const handlePhone = async (msg) => {
+async function handlePhone(msg) {
     const chatId = msg.chat.id;
     const userLanguage = (userInfo[chatId] && userInfo[chatId].language) ? userInfo[chatId].language : defaultLanguage;
     const phoneRegex = /^\+\d{6,16}$/;
@@ -123,12 +164,15 @@ const handlePhone = async (msg) => {
         await bot.sendMessage(chatId, await translateText('Неверный формат номера телефона. Пожалуйста, укажите действительный номер телефона, начиная с "+" и содержащий только цифры.', userLanguage));
     } else {
         expertHelpInfo[chatId].phone = msg.text;
+        userInfo[chatId].state = 'awaiting_fio';
         userStates[chatId].step = 'awaitingFIO';
+        saveData('expertHelpInfo', expertHelpInfo);
+        saveData('userStates', userStates);
         await bot.sendMessage(chatId, await translateText('Спасибо за информацию о вашем номере телефона! Теперь напишите ваше имя, фамилию и отчество.', userLanguage));
     }
 };
 
-const handleFIO = async (msg) => {
+async function handleFIO(msg) {
     const chatId = msg.chat.id;
     const userLanguage = (userInfo[chatId] && userInfo[chatId].language) ? userInfo[chatId].language : defaultLanguage;
 
@@ -152,10 +196,15 @@ const handleFIO = async (msg) => {
     // Очищаем информацию после завершения
     delete userStates[chatId];
     delete expertHelpInfo[chatId];
+    saveData('expertHelpInfo', expertHelpInfo);
+    saveData('userStates', userStates);
 };
 
 
 async function investmentStrategies(msg) {
+    userInfo[msg.chat.id].state = 'investment_strategies_start';
+    userInfo[msg.chat.id].lastMessageId = msg.message_id;
+    saveData('userStates', userStates);
     let userLanguage;
     if (userInfo[msg.chat.id] && userInfo[msg.chat.id].language) {
         userLanguage = defaultLanguage;
@@ -196,9 +245,19 @@ async function investmentStrategies(msg) {
 async function questionnaireForm(msg) {
     try {
         const chatId = msg.chat.id;
+        userInfo[chatId].state = 'questionnaire';
+        userInfo[chatId].lastMessageId = msg.message_id;
+        saveData('userInfo', userInfo);
+
+        // Завантаження даних користувача
+        userInfo = loadData('userInfo');
+        expertHelpInfo = loadData('expertHelpInfo');
+        userStates = loadData('userStates');
+        questionnaireAnswer = loadData('questionnaireAnswer');
+
         let userLanguage;
-        if (userInfo[msg.chat.id] && userInfo[msg.chat.id].language) {
-            userLanguage = userInfo[msg.chat.id].language;
+        if (userInfo[chatId] && userInfo[chatId].language) {
+            userLanguage = userInfo[chatId].language;
         } else {
             userLanguage = defaultLanguage;
         }
@@ -299,12 +358,13 @@ async function questionnaireForm(msg) {
             }
         ];
 
-
         if (!userStates[chatId]) {
             userStates[chatId] = { currentQuestionIndex: 0, waitingForDetail: false };
+            saveData('userStates', userStates);
         }
         if (!questionnaireAnswer[chatId]) {
             questionnaireAnswer[chatId] = {};
+            saveData('questionnaireAnswer', questionnaireAnswer);
         }
 
         const state = userStates[chatId];
@@ -326,10 +386,12 @@ async function questionnaireForm(msg) {
             const currentQuestion = questions[state.currentQuestionIndex];
 
             if (state.waitingForDetail) {
-                // Сохранить дополнительную информацию
+                // Зберігаємо додаткову інформацію
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] += `: ${text}`;
                 state.currentQuestionIndex++;
                 state.waitingForDetail = false;
+                saveData('questionnaireAnswer', questionnaireAnswer);
+                saveData('userStates', userStates);
 
                 if (state.currentQuestionIndex < questions.length) {
                     await sendQuestion();
@@ -337,9 +399,10 @@ async function questionnaireForm(msg) {
                     await handleEndOfQuestionnaire();
                 }
             } else if (currentQuestion.customOptionIndex !== undefined && text === currentQuestion.options[currentQuestion.customOptionIndex]) {
-                // Пользователь выбрал "Другое (пожалуйста, уточните)"
+                // Користувач вибрав "Інше (будь ласка, уточніть)"
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] = text;
                 state.waitingForDetail = true;
+                saveData('questionnaireAnswer', questionnaireAnswer);
 
                 await bot.sendMessage(
                     chatId,
@@ -347,9 +410,11 @@ async function questionnaireForm(msg) {
                     { reply_markup: { remove_keyboard: true } }
                 );
             } else {
-                // Сохранить ответ пользователя
+                // Зберігаємо відповідь користувача
                 questionnaireAnswer[chatId][`question${state.currentQuestionIndex + 1}`] = text;
                 state.currentQuestionIndex++;
+                saveData('questionnaireAnswer', questionnaireAnswer);
+                saveData('userStates', userStates);
 
                 if (state.currentQuestionIndex < questions.length) {
                     await sendQuestion();
@@ -389,12 +454,15 @@ async function questionnaireForm(msg) {
 
             delete questionnaireAnswer[chatId];
             delete userStates[chatId];
+            saveData('questionnaireAnswer', questionnaireAnswer);
+            saveData('userStates', userStates);
+
             bot.removeListener('message', handleAnswer);
         };
 
-        bot.removeListener('message', handleAnswer); // Удалить предыдущие обработчики для этого чата
+        bot.removeListener('message', handleAnswer); // Видаляємо попередні обробники для цього чату
         bot.on('message', (msg) => {
-            if (msg.chat.id === chatId) handleAnswer(msg); // Обрабатывать сообщения только для этого пользователя
+            if (msg.chat.id === chatId) handleAnswer(msg); // Обробляємо повідомлення тільки для цього користувача
         });
 
         await sendQuestion();
@@ -412,8 +480,12 @@ bot.on('callback_query', async (callbackQuery) => {
         const chatId = msg.chat.id;
         const messageId = msg.message_id;
         const data = callbackQuery.data;
-        console.log(data);
-        console.log(data);
+
+        userInfo = loadData('userInfo');
+        expertHelpInfo = loadData('expertHelpInfo');
+        userStates = loadData('userStates');
+        questionnaireAnswer = loadData('questionnaireAnswer');
+
         let userLanguage;
         try {
             if (!userInfo[chatId] || !userInfo[chatId].language) {
@@ -423,7 +495,6 @@ bot.on('callback_query', async (callbackQuery) => {
             }
             console.log(userLanguage);
         } catch (error) {
-            console.log("I'M HEEEEEEEEEEEEEEREEEEEEEEEEEEEEEE");
             console.log(error);
             userLanguage = defaultLanguage;
         }
@@ -448,6 +519,7 @@ bot.on('callback_query', async (callbackQuery) => {
 
             } catch (error) {
                 console.log(error);
+                await startExpertHelp(msg);
             }
         } else if (data === 'strategies') {
             try {
@@ -613,6 +685,12 @@ bot.on('callback_query', async (callbackQuery) => {
                 userLanguage
             ), opts);
         }
+
+        saveData('userInfo', userInfo);
+        saveData('expertHelpInfo', expertHelpInfo);
+        saveData('userStates', userStates);
+        saveData('questionnaireAnswer', questionnaireAnswer);
+
     } catch (error) {
         console.log("SOME ERROR HERE - " + error);
     }
@@ -631,5 +709,113 @@ async function translateText(clientText, targetLanguage) {
     } catch (err) {
         console.error('Translation error:', err);
         return clientText;
+    }
+}
+
+async function restoreUserState(bot, userInfo, chatId) {
+    if (!userInfo[chatId] || !userInfo[chatId].state) {
+        return; // Если состояние не задано, ничего не делаем
+    }
+
+    const userState = userInfo[chatId].state;
+
+    try {
+        switch (userState) {
+            case 'questionnaire':
+                await bot.sendMessage(chatId, await translateText("Приносим свои извинения, бот снова онлайн, пройдите форму дальше с того момента, где Вы ее закончили, или начните сначала", userInfo[chatId].language),
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: await translateText("Продолжить заполнение анкеты", userInfo[chatId].language), callback_data: "questionnaire" }],
+                                [{ text: await translateText("Просмотреть стартовое сообщение", userInfo[chatId].language), callback_data: "help_again" }]
+                            ]
+                        }
+                    }
+                );
+                break;
+            case 'investment_strategies_start':
+                await bot.sendMessage(chatId, await translateText("Приносим свои извинения, бот снова онлайн, если вы желаете просмотреть статегии инвестирования, то нажмите на соответствующую кнопку ниже, или начните сначала", userInfo[chatId].language),
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: await translateText("Стратегии инвестирования", userInfo[chatId].language), callback_data: "strategies" }],
+                                [{ text: await translateText("Просмотреть стартовое сообщение", userInfo[chatId].language), callback_data: "help_again" }]
+                            ]
+                        }
+                    }
+                );
+                break;
+            case 'awaiting_fio':
+            case 'awaiting_phone':
+            case 'awaiting_email':
+                await bot.sendMessage(chatId, await translateText("Приносим свои извинения, бот снова онлайн, пройдите форму заново еще раз нажав на соответствующую кнопку, или начните сначала", userInfo[chatId].language),
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: await translateText("Экспертная помощь с недвижимостью", userInfo[chatId].language), callback_data: "expert_help" }],
+                                [{ text: await translateText("Просмотреть стартовое сообщение", userInfo[chatId].language), callback_data: "help_again" }]
+                            ]
+                        }
+                    }
+                );
+                break;
+            case 'start':
+                userInfo = loadData('userInfo');
+                expertHelpInfo = loadData('expertHelpInfo');
+                userStates = loadData('userStates');
+                questionnaireAnswer = loadData('questionnaireAnswer');
+                const userLanguage = userInfo[chatId].language;
+                console.log(userInfo);
+                console.log(userLanguage);
+                userInfo[chatId] = {
+                    language: userLanguage,
+                    state: 'start'  // Устанавливаем начальное состояние
+                };
+
+                saveData('userInfo', userInfo);
+
+                const opts = {
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                {
+                                    text: await translateText("Анкета", userLanguage), callback_data: "questionnaire"
+                                }
+                            ],
+                            [
+                                {
+                                    text: await translateText("Экспертная помощь с недвижимостью", userLanguage), callback_data: "expert_help"
+                                }
+                            ],
+                            [
+                                {
+                                    text: await translateText("О нас", userLanguage), url: 'https://t.me'
+                                }
+                            ],
+                            [
+                                {
+                                    text: await translateText("Стратегии инвестирования", userLanguage), callback_data: "strategies"
+                                }
+                            ]
+                        ]
+                    }
+                };
+
+                await bot.sendMessage(chatId, await translateText(
+                    "Приветствуем вас в АН “Condor Real Estates”!\n\n" +
+                    "Мы рады приветствовать вас в нашем Telegram-боте! Наша инвестиционная компания специализируется на недвижимости на Бали, предоставляя вам уникальные возможности для выгодных вложений в один из самых живописных уголков мира.\n\n" +
+                    "Мы предлагаем широкий спектр услуг, включая покупку, продажу и аренду недвижимости, а также консультации по инвестициям и управлению объектами. Наши эксперты всегда готовы помочь вам найти наилучшие решения для достижения ваших финансовых целей.\n\n" +
+                    "С чего вам начать ⁉️\n" +
+                    "➡️Пройти опрос, чтобы мы смогли подобрать вам варианты недвижимости под ваш запрос и вы наглядно увидели, что можете получить на ваш бюджет.\n➡️Следите за нашими обновлениями, получайте актуальную информацию о новых объектах и специальных предложениях, а также задавайте вопросы — мы всегда на связи и готовы помочь!\n\n" +
+                    "Спасибо, что выбрали нас. Давайте вместе создадим Ваше успешное будущее на Бали!\n\n" +
+                    "⬇️Сделайте свой выбор⬇️",
+                    userLanguage
+                ), opts);
+                break;
+            default:
+                console.log(`Неизвестное состояние для chatId ${chatId}: ${userState}`);
+        }
+    } catch (error) {
+        console.log(`Ошибка при восстановлении состояния пользователя ${chatId}: ${error.message}`);
     }
 }
